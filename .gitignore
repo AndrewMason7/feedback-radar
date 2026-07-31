@@ -1,0 +1,11 @@
+# never commit secrets
+credentials.json
+token.json
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# generated output
+dashboard.html
