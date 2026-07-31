@@ -15,6 +15,8 @@ with a **Google Antigravity SDK** agent, and renders a live, filterable HTML das
 - ⚡ Quick Wins: high impact + low effort, flagged automatically
 - ☕ Executive morning brief + overall mood bar
 - 💾 SQLite caching (`db.py`) — skips previously triaged items to save LLM API quota
+- 🧠 Smart Heuristic Classifier (`heuristic_classify`) — generates rich categorizations and emojis even when offline or hitting free-tier API rate limits
+- 🛡️ Resilient & Fault Tolerant — 3-attempt HTTP retries, per-batch triage isolation, and automatic fallback cards on connection drops
 - 🎛️ Fully filterable: type, importance, source, duplicates, quick wins, live search
 - 🔁 Automatic retries with exponential backoff (SDK v0.1.9 `RetryConfig`)
 - 🛟 Tool failures recover gracefully (SDK v0.1.9 `ToolExecutionError` hooks)
@@ -28,16 +30,16 @@ Radar follows a strict **Separation of Concerns (SoC)** package structure:
 
 ```
 feedback-radar/
-├── radar.py                 # Lean CLI entry point & orchestrator (~120 lines)
+├── radar.py                 # Lean CLI entry point & orchestrator (~125 lines)
 ├── db.py                    # SQLite persistence & content hashing layer
 ├── models.py                # Core dataclasses (FeedbackItem, Card) & enum normalizers
 ├── fetchers/                # Ingestion subpackage
-│   ├── github.py            # GitHub issues fetcher (REST + GITHUB_TOKEN support)
+│   ├── github.py            # GitHub issues fetcher (REST + GITHUB_TOKEN + retries)
 │   ├── sheets.py            # Google Sheets CSV fetcher with column length heuristics
 │   ├── gmail.py             # Gmail API & OAuth token manager
-│   └── demo.py              # Offline demo dataset
+│   └── demo.py              # Live repo preview fetcher (google-antigravity/antigravity-sdk-python)
 ├── engine/                  # Processing subpackage
-│   ├── triage.py            # Resilient batch LLM triage pass
+│   ├── triage.py            # Resilient batch LLM triage pass & heuristic classifier
 │   ├── dedup.py             # Pass 2 global deduplication engine
 │   ├── brief.py             # Executive morning brief synthesizer
 │   ├── prompts.py           # Strict JSON prompt templates
@@ -45,22 +47,22 @@ feedback-radar/
 └── ui/                      # Presentation subpackage
     ├── static/style.css     # Material 3 CSS layout & styles
     ├── static/app.js        # Client-side filtering & search JS
-    └── renderer.py          # HTML template renderer & XSS escaping
+    └── renderer.py          # HTML template renderer & URL scheme sanitization
 ```
 
 ---
 
-## Try it in 30 seconds (no API key)
+## Try it in 30 seconds (no API key required) 🚀
 
 ```bash
 python radar.py --demo
 ```
 
-Open `dashboard.html` — same pipeline, precomputed data.
+Fetches real open issues from `google-antigravity/antigravity-sdk-python` and sample sheet data, triages them with the smart heuristic classifier, and renders `dashboard.html` instantly!
 
 ---
 
-## Real run
+## Real AI Run 🤖
 
 ```bash
 pip install google-antigravity
@@ -76,6 +78,17 @@ python radar.py --serve
 
 Runs once immediately, then rebuilds every `RADAR_SERVE_INTERVAL` seconds
 (default: 86400 = daily) using the SDK's official `every()` trigger mechanism.
+
+---
+
+## Network & Error Resilience 🛡️
+
+Radar is built to never crash or lose data, even under unstable network conditions:
+
+1. **HTTP Retries**: GitHub API requests use 3-attempt exponential backoff.
+2. **Batch Isolation**: Triage runs in 10-item chunks. If batch #3 fails due to a network drop or 429 rate limit, batches #1 & #2 remain cached in `radar.db` while batch #3 uses the heuristic fallback.
+3. **Pass 2 Dedup & Brief Resilience**: If Gemini is unreachable during deduplication or summary synthesis, Radar degrades gracefully to Pass 1 links and structural fallback summaries.
+4. **URL Sanitization**: All links strictly enforce `http://` and `https://` schemes, automatically stripping malicious protocol payloads.
 
 ---
 
@@ -113,12 +126,14 @@ If setup is missing, the source skips itself silently.
 - Feedback text is treated as **untrusted data** — the agent is instructed to ignore any
   instructions embedded inside it (prompt-injection guard)
 - Agent runs with the SDK default **read-only** policy — it never touches your filesystem
-- All feedback content is HTML-escaped before rendering (XSS-safe)
+- All feedback content is HTML-escaped and URL-sanitized before rendering (XSS-safe)
 - `credentials.json`, `token.json`, and `radar.db` are git-ignored — never commit them
 
 ---
 
 ## Tests
+
+Run all 20 automated unit tests:
 
 ```bash
 python test_radar.py
