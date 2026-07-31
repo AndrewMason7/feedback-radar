@@ -11,6 +11,13 @@ CSS = (UI_DIR / "static" / "style.css").read_text(encoding="utf-8")
 FILTER_JS = "<script>\n" + (UI_DIR / "static" / "app.js").read_text(encoding="utf-8") + "\n</script>"
 
 
+def safe_url(url: str) -> str:
+    url_str = (url or "").strip()
+    if url_str.startswith("http://") or url_str.startswith("https://"):
+        return url_str
+    return ""
+
+
 def render_card(c):
     dup_cls = " dup" if c.duplicate_of else ""
     is_dup = 1 if c.duplicate_of else 0
@@ -23,8 +30,9 @@ def render_card(c):
                    '%d similar reports merged</div>') % c.dup_count
     else:
         dupnote = ""
+    clean_url = safe_url(c.url)
     link = ('<a href="%s" target="_blank" rel="noopener">source <span class="msi" style="font-size:14px">open_in_new</span></a>'
-            % esc(c.url)) if c.url else "<span>%s</span>" % esc(c.source)
+            % esc(clean_url)) if clean_url else "<span>%s</span>" % esc(c.source)
     cat_icon = CAT_ICON.get(c.category, "label")
     return (
         '<div class="card%s" data-cat="%s" data-imp="%s" data-src="%s" data-dup="%d" data-qw="%d">'

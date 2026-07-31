@@ -17,11 +17,21 @@ def fetch_github_issues(repo, limit=MAX_GITHUB_ITEMS):
     if token:
         headers["Authorization"] = "token %s" % token
     req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print("[warn] GitHub: could not fetch %s (%s) — continuing without it" % (repo, e))
+    
+    data = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+                break
+        except Exception as e:
+            last_err = e
+            import time
+            time.sleep(0.5 * (2 ** attempt))
+
+    if data is None:
+        print("[warn] GitHub: could not fetch %s (%s) — continuing without it" % (repo, last_err))
         return []
 
     items = []

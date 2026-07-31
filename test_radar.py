@@ -195,6 +195,15 @@ def test_db_cache_hit_and_miss():
         assert db.get_cached_card("test-1", "Modified text content", db_path) is None
 
 
+def test_unsafe_javascript_url_stripped():
+    evil = Card("x", "Title", "bug", "high", "easy", "hours", "Summary",
+                "neutral", "GitHub", "javascript:alert(1)", "attacker")
+    out = render_card(evil)
+    assert 'href="javascript:' not in out
+    assert 'href=""' not in out
+    assert "<span>GitHub</span>" in out
+
+
 if __name__ == "__main__":
     funcs = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     passed = 0

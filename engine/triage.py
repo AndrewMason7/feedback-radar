@@ -89,8 +89,11 @@ def rows_to_cards(rows, items):
     return cards
 
 
+DEDUP_BATCH = 50
+
+
 async def deduplicate_cards_global(rows):
-    """Pass 2: Global deduplication engine evaluating duplicate clusters across all cards."""
+    """Pass 2: Global deduplication engine evaluating duplicate clusters across cards."""
     if len(rows) <= 1:
         return rows
     from google.antigravity import Agent, LocalAgentConfig
@@ -98,13 +101,15 @@ async def deduplicate_cards_global(rows):
     items_to_check = [{"id": r.get("id"), "title": r.get("title"), "summary": r.get("summary")} for r in rows if r.get("id")]
     try:
         async with Agent(LocalAgentConfig(**agent_config("You are a strict deduplication engine. Output JSON only."))) as agent:
-            resp = await agent.chat(DEDUP_PROMPT.format(cards=json.dumps(items_to_check, ensure_ascii=False)))
-            dedup_results = extract_json(await resp.text())
-            if isinstance(dedup_results, list):
-                dedup_map = {item.get("id"): item.get("duplicate_of") for item in dedup_results if isinstance(item, dict) and "id" in item}
-                for r in rows:
-                    if r.get("id") in dedup_map:
-                        r["duplicate_of"] = dedup_map[r["id"]]
+            for i in range(0, len(items_to_check), DEDUP_BATCH):
+                chunk = items_to_check[i:i + DEDUP_BATCH]
+                resp = await agent.chat(DEDUP_PROMPT.format(cards=json.dumps(chunk, ensure_ascii=False)))
+                dedup_results = extract_json(await resp.text())
+                if isinstance(dedup_results, list):
+                    dedup_map = {item.get("id"): item.get("duplicate_of") for item in dedup_results if isinstance(item, dict) and "id" in item}
+                    for r in rows:
+                        if r.get("id") in dedup_map:
+                            r["duplicate_of"] = dedup_map[r["id"]]
     except Exception as e:
         print("[warn] global deduplication pass skipped (%s) — keeping pass 1 links" % e)
     return rows
@@ -173,8 +178,7 @@ async def analyze_items(items):
         all_rows = await deduplicate_cards_global(all_rows)
 
     cards = rows_to_cards(all_rows, items)
-    if new_rows:
-        db.save_cached_cards(cards, items_dict)
+    db.save_cached_cards(cards, items_dict)
     return cards
 
 
