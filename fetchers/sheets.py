@@ -2,6 +2,8 @@
 Google Sheets CSV fetcher module with smart column length detection.
 """
 import csv
+import io
+import time
 import urllib.request
 from pathlib import Path
 from models import FeedbackItem
@@ -18,10 +20,21 @@ def fetch_google_sheet(csv_url="", local_csv=None):
     source_name = "Google Sheet"
     try:
         if csv_url:
-            req = urllib.request.Request(csv_url, headers={"User-Agent": "feedback-radar"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                content = resp.read(MAX_SHEET_BYTES).decode("utf-8-sig", errors="replace")
-            rows = list(csv.DictReader(content.splitlines()))
+            content = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(csv_url, headers={"User-Agent": "feedback-radar"})
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        content = resp.read(MAX_SHEET_BYTES).decode("utf-8-sig", errors="replace")
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.5 * (2 ** attempt))
+            if content is None:
+                print("[warn] Google Sheet: could not fetch (%s) — continuing without it" % last_err)
+                return []
+            rows = list(csv.DictReader(io.StringIO(content)))
         elif local_csv and Path(local_csv).exists():
             with open(local_csv, encoding="utf-8-sig") as f:
                 rows = list(csv.DictReader(f))

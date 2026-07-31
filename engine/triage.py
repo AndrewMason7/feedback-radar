@@ -308,14 +308,18 @@ async def summarize_cards(cards):
     """The executive morning brief."""
     try:
         from google.antigravity import Agent, LocalAgentConfig
+        has_sdk = bool(resolve_api_key())
     except (ImportError, ModuleNotFoundError):
-        print("[warn] google-antigravity SDK not installed — using summary fallback")
+        has_sdk = False
+
+    if not has_sdk:
+        print("[info] SDK or API key missing — using summary fallback")
         high_count = sum(1 for c in cards if c.importance == "high")
         return {
             "headline": f"Triaged {len(cards)} feedback items ({high_count} high priority).",
             "bullets": [
                 f"Collected {len(cards)} items across connected feedback channels.",
-                "Install google-antigravity package for AI-synthesized executive briefs.",
+                "Install google-antigravity and set GEMINI_API_KEY for AI-synthesized executive briefs.",
                 "Filter and inspect triaged items below.",
             ],
             "mood": {"frustrated": 33, "neutral": 34, "excited": 33},

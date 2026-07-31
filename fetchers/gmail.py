@@ -25,6 +25,14 @@ def fetch_gmail(max_results=25):
     cred_file = BASE_DIR / "credentials.json"
     if token_file.exists():
         creds = Credentials.from_authorized_user_file(str(token_file), GMAIL_SCOPES)
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            token_file.write_text(creds.to_json(), encoding="utf-8")
+        except Exception as e:
+            print("[warn] Gmail: token refresh failed (%s) — falling back to OAuth flow" % e)
+            creds = None
     if not creds or not creds.valid:
         if not cred_file.exists():
             print("[skip] Gmail: no credentials.json found — skipping")
@@ -41,20 +49,23 @@ def fetch_gmail(max_results=25):
         msgs = listed.get("messages", [])
         items = []
         for i, m in enumerate(msgs):
-            msg = service.users().messages().get(
-                userId="me", id=m["id"], format="metadata",
-                metadataHeaders=["From", "Subject", "Date"]).execute()
-            headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
-            subject = headers.get("Subject", "(no subject)")
-            sender = headers.get("From", "unknown").split("<")[0].strip() or "unknown"
-            items.append(FeedbackItem(
-                id="gm-%d" % (i + 1),
-                source="Gmail",
-                author=sender,
-                text=("%s\n\n%s" % (subject, msg.get("snippet", ""))).strip()[:1500],
-                url="",
-                created=headers.get("Date", ""),
-            ))
+            try:
+                msg = service.users().messages().get(
+                    userId="me", id=m["id"], format="metadata",
+                    metadataHeaders=["From", "Subject", "Date"]).execute()
+                headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                subject = headers.get("Subject", "(no subject)")
+                sender = headers.get("From", "unknown").split("<")[0].strip() or "unknown"
+                items.append(FeedbackItem(
+                    id="gm-%d" % (i + 1),
+                    source="Gmail",
+                    author=sender,
+                    text=("%s\n\n%s" % (subject, msg.get("snippet", ""))).strip()[:1500],
+                    url="",
+                    created=headers.get("Date", ""),
+                ))
+            except Exception as e:
+                print("[warn] Gmail: skipping message %s (%s)" % (m.get("id", "?"), e))
         print("[ok] Gmail: fetched %d feedback items (query: %s)" % (len(items), GMAIL_QUERY))
         return items
     except Exception as e:

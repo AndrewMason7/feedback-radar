@@ -61,9 +61,14 @@ async def run_real():
         sheet_task = _empty()
 
     gh_items, gmail_items, sheet_items = await asyncio.gather(
-        gh_task, gmail_task, sheet_task
+        gh_task, gmail_task, sheet_task, return_exceptions=True
     )
-    items = (gh_items or []) + (gmail_items or []) + (sheet_items or [])
+    items = []
+    for result in (gh_items, gmail_items, sheet_items):
+        if isinstance(result, Exception):
+            print("[warn] a source crashed (%s) — continuing without it" % result)
+            continue
+        items.extend(result or [])
 
     if not items:
         print("[err] no feedback found — check your sources or run: python radar.py --demo")
