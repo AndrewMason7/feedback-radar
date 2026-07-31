@@ -41,11 +41,15 @@ def build_tool_error_hook():
         return None
 
 
-def agent_config(system_instructions):
+def agent_config(system_instructions, response_schema=None, api_key=None):
     """Shared LocalAgentConfig: system prompt + v0.1.9 retry policy + error hook."""
     cfg = {"system_instructions": system_instructions}
     if MODEL:
         cfg["model"] = MODEL
+    if response_schema is not None:
+        cfg["response_schema"] = response_schema
+    if api_key:
+        cfg["api_key"] = api_key
     retry = build_retry_policy()
     if retry is not None:
         cfg["retry_config"] = retry

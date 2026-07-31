@@ -17,6 +17,60 @@ from engine.sdk import agent_config
 
 ANALYSIS_BATCH = 10
 
+TRIAGE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "title": {"type": "string"},
+            "category": {"type": "string", "enum": CATEGORIES},
+            "importance": {"type": "string", "enum": IMPORTANCE},
+            "difficulty": {"type": "string", "enum": DIFFICULTY},
+            "eta": {"type": "string", "enum": ["hours", "days", "weeks"]},
+            "summary": {"type": "string"},
+            "sentiment": {"type": "string", "enum": SENTIMENTS},
+            "duplicate_of": {"type": ["string", "null"]},
+        },
+        "required": ["id"],
+    },
+}
+
+DEDUP_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "duplicate_of": {"type": ["string", "null"]},
+        },
+        "required": ["id"],
+    },
+}
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "headline": {"type": "string"},
+        "bullets": {"type": "array", "items": {"type": "string"}},
+        "mood": {"type": "object"},
+    },
+    "required": ["headline", "bullets", "mood"],
+}
+
+
+def resolve_api_key():
+    """RADAR_API_KEY overrides GEMINI_API_KEY; returns None when neither is set."""
+    return os.getenv("RADAR_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+
+async def response_payload(response):
+    """Prefer SDK structured output; fall back to parsing the raw text."""
+    payload = await response.structured_output()
+    if payload is None:
+        payload = extract_json(await response.text())
+    return payload
+
 
 def extract_json(text):
     """Pull JSON out of a model response, even if wrapped in chatter or code fences."""
@@ -101,11 +155,13 @@ async def deduplicate_cards_global(rows):
 
     items_to_check = [{"id": r.get("id"), "title": r.get("title"), "summary": r.get("summary")} for r in rows if r.get("id")]
     try:
-        async with Agent(LocalAgentConfig(**agent_config("You are a strict deduplication engine. Output JSON only."))) as agent:
+        async with Agent(LocalAgentConfig(**agent_config(
+                "You are a strict deduplication engine. Output JSON only.",
+                response_schema=DEDUP_SCHEMA, api_key=resolve_api_key()))) as agent:
             for i in range(0, len(items_to_check), DEDUP_BATCH):
                 chunk = items_to_check[i:i + DEDUP_BATCH]
                 resp = await agent.chat(DEDUP_PROMPT.format(cards=json.dumps(chunk, ensure_ascii=False)))
-                dedup_results = extract_json(await resp.text())
+                dedup_results = await response_payload(resp)
                 if isinstance(dedup_results, list):
                     dedup_map = {item.get("id"): item.get("duplicate_of") for item in dedup_results if isinstance(item, dict) and "id" in item}
                     for r in rows:
@@ -171,7 +227,7 @@ def heuristic_classify(text: str) -> dict:
 
 async def analyze_items(items):
     """Send feedback to the agent in resilient batches, using SQLite cache."""
-    has_key = bool(os.getenv("GEMINI_API_KEY"))
+    has_key = bool(resolve_api_key())
     try:
         from google.antigravity import Agent, LocalAgentConfig
         has_sdk = has_key
@@ -201,7 +257,9 @@ async def analyze_items(items):
             for it in uncached_items
         ]
         if has_sdk:
-            async with Agent(LocalAgentConfig(**agent_config(SYSTEM_TRIAGE))) as agent:
+            async with Agent(LocalAgentConfig(**agent_config(
+                    SYSTEM_TRIAGE, response_schema=TRIAGE_SCHEMA,
+                    api_key=resolve_api_key()))) as agent:
                 for i in range(0, len(payload), ANALYSIS_BATCH):
                     chunk = payload[i:i + ANALYSIS_BATCH]
                     known = [{"id": r.get("id"), "title": r.get("title")}
@@ -213,7 +271,7 @@ async def analyze_items(items):
                         response = await agent.chat(ANALYSIS_PROMPT.format(
                             items=json.dumps(chunk, ensure_ascii=False, indent=2),
                             known=json.dumps(known, ensure_ascii=False)))
-                        extracted = extract_json(await response.text())
+                        extracted = await response_payload(response)
                         if isinstance(extracted, list):
                             new_rows.extend(extracted)
                         elif isinstance(extracted, dict):
@@ -264,11 +322,12 @@ async def summarize_cards(cards):
         }
 
     try:
-        async with Agent(LocalAgentConfig(
-                **agent_config("You write crisp executive briefs. Strict JSON only."))) as agent:
+        async with Agent(LocalAgentConfig(**agent_config(
+                "You write crisp executive briefs. Strict JSON only.",
+                response_schema=SUMMARY_SCHEMA, api_key=resolve_api_key()))) as agent:
             response = await agent.chat(SUMMARY_PROMPT.format(
                 cards=json.dumps([asdict(c) for c in cards], ensure_ascii=False)))
-            return extract_json(await response.text())
+            return await response_payload(response)
     except Exception as e:
         print("[warn] executive summary agent call failed (%s) — using summary fallback" % e)
         high_count = sum(1 for c in cards if c.importance == "high")

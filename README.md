@@ -1,66 +1,75 @@
 # Radar 📡
 
-Every voice, one dashboard.
+**Every voice, one dashboard.**
 
-Radar collects feedback from **GitHub Issues**, **Google Sheets**, and **Gmail**, triages it
-with a **Google Antigravity SDK** agent, and renders a live, filterable HTML dashboard.
+Radar collects user feedback from **GitHub Issues**, **Google Sheets**, and **Gmail**,
+triages it with a **Google Antigravity SDK** agent, and renders a live, filterable
+HTML dashboard — so your morning standup starts with answers, not archaeology.
 
 ![Radar dashboard](docs/screenshot-1-dashboard.png)
 
-- 📌 Short auto-generated title for every item (invented when the rant has none)
-- 🏷️ Category: bug / feature / question / docs / praise / rant
-- 🔴 Importance + 🛠️ estimated difficulty + ⏱️ ETA
-- 😡 Sentiment (frustrated / neutral / excited)
-- ⧉ Automatic 2-Pass duplicate merging (multi-source duplicate clustering)
-- ⚡ Quick Wins: high impact + low effort, flagged automatically
-- ☕ Executive morning brief + overall mood bar
-- 💾 SQLite caching (`db.py`) — skips previously triaged items to save LLM API quota
-- 🧠 Smart Heuristic Classifier (`heuristic_classify`) — generates rich categorizations and emojis even when offline or hitting free-tier API rate limits
-- 🛡️ Resilient & Fault Tolerant — 3-attempt HTTP retries, per-batch triage isolation, and automatic fallback cards on connection drops
-- 🎛️ Fully filterable: type, importance, source, duplicates, quick wins, live search
-- 🔁 Automatic retries with exponential backoff (SDK v0.1.9 `RetryConfig`)
-- 🛟 Tool failures recover gracefully (SDK v0.1.9 `ToolExecutionError` hooks)
-- ⏰ `--serve` mode rebuilds the dashboard daily via the SDK trigger system with non-blocking async I/O
+## Why Radar?
+
+Feedback is everywhere; insight is nowhere. Radar reads every rant, praise, and
+"it would be nice if…" so you don't have to — then tells you what actually matters.
+
+- 📌 **Titles for everything** — short auto-generated titles, even when the rant has none
+- 🏷️ **Classification** — bug / feature / question / docs / praise / rant
+- 🔴 **Prioritization** — importance, estimated difficulty, and ETA per item
+- 😡 **Sentiment tracking** — frustrated / neutral / excited, plus an overall mood bar
+- ⧉ **2-pass duplicate merging** — clusters the same complaint across every source
+- ⚡ **Quick Wins** — high impact + low effort, flagged automatically
+- ☕ **Executive morning brief** — the three things you need to know today
+- 🎛️ **Fully filterable dashboard** — type, importance, source, duplicates, quick wins, live search
 
 ---
 
-## Modular Architecture 🏗️
-
-Radar follows a strict **Separation of Concerns (SoC)** package structure:
+## How It Works ⚙️
 
 ```
-feedback-radar/
-├── radar.py                 # Lean CLI entry point & orchestrator (~125 lines)
-├── db.py                    # SQLite persistence & content hashing layer
-├── models.py                # Core dataclasses (FeedbackItem, Card) & enum normalizers
-├── fetchers/                # Ingestion subpackage
-│   ├── github.py            # GitHub issues fetcher (REST + GITHUB_TOKEN + retries)
-│   ├── sheets.py            # Google Sheets CSV fetcher with column length heuristics
-│   ├── gmail.py             # Gmail API & OAuth token manager
-│   └── demo.py              # Live repo preview fetcher (google-antigravity/antigravity-sdk-python)
-├── engine/                  # Processing subpackage
-│   ├── triage.py            # Resilient batch LLM triage pass & heuristic classifier
-│   ├── dedup.py             # Pass 2 global deduplication engine
-│   ├── brief.py             # Executive morning brief synthesizer
-│   ├── prompts.py           # Strict JSON prompt templates
-│   └── sdk.py               # Antigravity SDK agent configuration & hooks
-└── ui/                      # Presentation subpackage
-    ├── static/style.css     # Material 3 CSS layout & styles
-    ├── static/app.js        # Client-side filtering & search JS
-    └── renderer.py          # HTML template renderer & URL scheme sanitization
+ GitHub Issues ┐
+ Google Sheets ┼─► 1. FETCH      concurrent async ingestion from all sources
+ Gmail         ┘
+                   │
+                   ▼
+               2. CACHE       SQLite content hashing (db.py) —
+                              already-triaged items skip the LLM entirely
+                   │
+                   ▼
+               3. TRIAGE      Antigravity agent classifies uncached items in
+                              batches of 10, with guaranteed-JSON output via
+                              the SDK's response_schema (structured output)
+                   │
+                   ▼
+               4. DEDUP       Pass 2: a second agent pass clusters duplicates
+                              globally, across sources and batches
+                   │
+                   ▼
+               5. BRIEF       A third agent pass synthesizes the executive
+                              summary + mood breakdown
+                   │
+                   ▼
+               6. RENDER      XSS-safe HTML dashboard with client-side
+                              filtering and live search
 ```
+
+Every LLM step degrades gracefully: if the API is unreachable, over quota, or the
+SDK isn't installed, Radar falls back to a built-in heuristic classifier and
+structural summaries. The dashboard always ships. 📦
 
 ---
 
-## Try it in 30 seconds (no API key required) 🚀
+## Try It in 30 Seconds 🚀
+
+No API key required:
 
 ```bash
 python radar.py --demo
 ```
 
-Fetches real open issues from `google-antigravity/antigravity-sdk-python` and sample sheet data, triages them with the smart heuristic classifier, and renders `dashboard.html` instantly!
-
----
+Fetches real open issues from `google-antigravity/antigravity-sdk-python` plus
+sample sheet data, triages them with the heuristic classifier, and renders
+`dashboard.html` instantly.
 
 ## Real AI Run 🤖
 
@@ -77,38 +86,59 @@ python radar.py --serve
 ```
 
 Runs once immediately, then rebuilds every `RADAR_SERVE_INTERVAL` seconds
-(default: 86400 = daily) using the SDK's official `every()` trigger mechanism.
+(default: 86400 = daily) using the SDK's official `every()` trigger mechanism
+with non-blocking async I/O.
 
 ---
 
-## Network & Error Resilience 🛡️
+## Architecture 🏗️
 
-Radar is built to never crash or lose data, even under unstable network conditions:
+Radar follows a strict **Separation of Concerns** package structure:
 
-1. **HTTP Retries**: GitHub API requests use 3-attempt exponential backoff.
-2. **Batch Isolation**: Triage runs in 10-item chunks. If batch #3 fails due to a network drop or 429 rate limit, batches #1 & #2 remain cached in `radar.db` while batch #3 uses the heuristic fallback.
-3. **Pass 2 Dedup & Brief Resilience**: If Gemini is unreachable during deduplication or summary synthesis, Radar degrades gracefully to Pass 1 links and structural fallback summaries.
-4. **URL Sanitization**: All links strictly enforce `http://` and `https://` schemes, automatically stripping malicious protocol payloads.
+```
+feedback-radar/
+├── radar.py                 # Lean CLI entry point & orchestrator (~137 lines)
+├── db.py                    # SQLite persistence & content hashing layer
+├── models.py                # Core dataclasses (FeedbackItem, Card) & enum normalizers
+├── fetchers/                # Ingestion subpackage
+│   ├── github.py            # GitHub issues fetcher (REST + GITHUB_TOKEN + retries)
+│   ├── sheets.py            # Google Sheets CSV fetcher with column length heuristics
+│   ├── gmail.py             # Gmail API & OAuth token manager
+│   └── demo.py              # Live repo preview fetcher (google-antigravity/antigravity-sdk-python)
+├── engine/                  # Processing subpackage
+│   ├── triage.py            # Batch triage, Pass 2 global dedup, brief synthesis, heuristic fallback
+│   ├── prompts.py           # Prompt templates (paired with SDK response schemas)
+│   └── sdk.py               # Antigravity SDK agent configuration & hooks
+└── ui/                      # Presentation subpackage
+    ├── static/style.css     # Material 3 CSS layout & styles
+    ├── static/app.js        # Client-side filtering & search JS
+    └── renderer.py          # HTML template renderer & URL scheme sanitization
+```
 
 ---
 
-### Sources & Configuration (environment variables)
+## Configuration 🎛️
 
 | Variable | Description | Default |
 |---|---|---|
+| `GEMINI_API_KEY` | Gemini API key for the triage agent | unset |
+| `RADAR_API_KEY` | Optional override — takes precedence over `GEMINI_API_KEY` | unset |
 | `RADAR_GITHUB_REPO` | Public repo `owner/repo` | `google-antigravity/antigravity-sdk-python` |
-| `GITHUB_TOKEN` | Optional GitHub Personal Access Token (boosts rate limits to 5,000 req/hr) | unset |
+| `GITHUB_TOKEN` | Optional GitHub PAT (boosts rate limits to 5,000 req/hr) | unset |
 | `RADAR_SHEET_CSV` | Published Google Sheet CSV URL | local `sample_feedback.csv` |
 | `RADAR_GMAIL_QUERY` | Gmail search query | `label:feedback newer_than:30d` |
 | `RADAR_MODEL` | Override the default model | SDK default |
 | `RADAR_SERVE_INTERVAL` | Seconds between rebuilds in `--serve` mode | `86400` |
+
+A `.env` file next to `radar.py` is picked up automatically (see `.env.example`).
 
 ### Google Sheets as a source
 1. Open the sheet (e.g. Google Form responses)
 2. **File → Share → Publish to web → CSV**
 3. Set `RADAR_SHEET_CSV` to that link
 
-Expected columns: `feedback, author, date` (lenient — uses column length heuristics if header names differ).
+Expected columns: `feedback, author, date` (lenient — column-length heuristics
+kick in if headers differ).
 
 ### Gmail as a source (optional)
 ```bash
@@ -122,18 +152,32 @@ If setup is missing, the source skips itself silently.
 
 ---
 
-## Security notes 🔒
-- Feedback text is treated as **untrusted data** — the agent is instructed to ignore any
-  instructions embedded inside it (prompt-injection guard)
-- Agent runs with the SDK default **read-only** policy — it never touches your filesystem
+## Resilience 🛡️
+
+Radar is built to never crash or lose data, even on a bad network:
+
+1. **HTTP retries** — GitHub API requests use 3-attempt exponential backoff.
+2. **Batch isolation** — triage runs in 10-item chunks; if batch #3 hits a 429,
+   batches #1 & #2 stay cached in `radar.db` and batch #3 falls back to heuristics.
+3. **Graceful dedup & brief** — if Gemini is unreachable during Pass 2 or summary
+   synthesis, Radar keeps Pass 1 links and structural fallback summaries.
+4. **SDK-level retries** — `RetryConfig` with exponential backoff and jitter,
+   plus `ToolExecutionError` hooks that tell the agent how to recover.
+
+## Security 🔒
+
+- Feedback text is treated as **untrusted data** — the agent is instructed to
+  ignore any instructions embedded inside it (prompt-injection guard)
+- The agent runs with the SDK default **read-only** policy — it never touches your filesystem
 - All feedback content is HTML-escaped and URL-sanitized before rendering (XSS-safe)
+- All links are strictly limited to `http://` / `https://` schemes
 - `credentials.json`, `token.json`, and `radar.db` are git-ignored — never commit them
 
 ---
 
-## Tests
+## Tests ✅
 
-Run all 20 automated unit tests:
+Run all 20 unit tests:
 
 ```bash
 python test_radar.py
@@ -148,11 +192,4 @@ pytest test_radar.py -v
 
 ---
 
-## Roadmap
-- GitHub MCP server instead of REST (deeper pulls)
-- Cron-expression triggers (SDK currently ships `every()` only)
-- More sources: Discord, Play Store reviews, X
-
----
-
-Built with [Google Antigravity SDK](https://github.com/google-antigravity/antigravity-sdk-python) v0.1.9 🤖
+Built with the [Google Antigravity SDK](https://github.com/google-antigravity/antigravity-sdk-python) 🤖
