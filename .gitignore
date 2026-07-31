@@ -10,7 +10,6 @@ __pycache__/
 # generated output
 dashboard.html
 
-# local-only working notes
-docs/tweet-replies.md
+# extra local screenshots
 docs/screenshot-2-filters.png
 docs/screenshot-3-mobile.png
