@@ -5,9 +5,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import db
-from radar import (Card, FeedbackItem, extract_json, fetch_google_sheet,
-                    normalize, render_card, render_dashboard, rows_to_cards,
-                    safe_int, demo_data)
+from models import Card, FeedbackItem, normalize, safe_int
+from fetchers import fetch_google_sheet, demo_data
+from engine import extract_json, rows_to_cards
+from ui.renderer import render_card, render_dashboard
 
 
 def make_items(*ids):
@@ -147,7 +148,7 @@ def test_dashboard_escapes_model_output():
 # ---------- v0.1.9 feature wiring ----------
 
 def test_agent_config_always_has_system_instructions():
-    from radar import agent_config
+    from engine import agent_config
     cfg = agent_config("test prompt")
     assert cfg["system_instructions"] == "test prompt"
     # retry/hooks only appear when SDK v0.1.9+ is installed
@@ -163,7 +164,7 @@ def test_serve_interval_defaults_to_daily():
 
 
 def test_retry_policy_degrades_gracefully():
-    from radar import build_retry_policy
+    from engine import build_retry_policy
     build_retry_policy()
 
 
