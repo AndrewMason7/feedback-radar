@@ -2,6 +2,7 @@
 Triage, deduplication, and summary orchestration engine.
 """
 import json
+import os
 import re
 from dataclasses import asdict
 
@@ -115,11 +116,65 @@ async def deduplicate_cards_global(rows):
     return rows
 
 
+def heuristic_classify(text: str) -> dict:
+    t = text.lower()
+    
+    if any(k in t for k in ["bug", "crash", "error", "fail", "broken", "hang", "freeze", "issue", "exception", "fault"]):
+        category = "bug"
+    elif any(k in t for k in ["feature", "add", "support", "request", "allow", "enable", "would be", "option", "new"]):
+        category = "feature"
+    elif any(k in t for k in ["doc", "readme", "example", "guide", "tutorial", "instruction", "explain"]):
+        category = "docs"
+    elif any(k in t for k in ["praise", "great", "awesome", "love", "thanks", "replaced", "fantastic", "amazing"]):
+        category = "praise"
+    elif any(k in t for k in ["how", "what", "why", "can i", "where", "question"]):
+        category = "question"
+    else:
+        category = "other"
+
+    if any(k in t for k in ["crash", "hang", "freeze", "urgent", "critical", "broken", "unblock", "high", "serious"]):
+        importance = "high"
+    elif any(k in t for k in ["minor", "typo", "low", "cosmetic", "small"]):
+        importance = "low"
+    else:
+        importance = "medium"
+
+    if any(k in t for k in ["doc", "typo", "readme", "example", "rename", "export", "simple", "easy"]):
+        difficulty, eta = "easy", "hours"
+    elif any(k in t for k in ["ts", "typescript", "compiler", "architecture", "rewrite", "hard", "complex"]):
+        difficulty, eta = "hard", "weeks"
+    else:
+        difficulty, eta = "medium", "days"
+
+    if any(k in t for k in ["hang", "freeze", "frustrated", "confusing", "error", "fail", "cant", "cannot", "broken"]):
+        sentiment = "frustrated"
+    elif any(k in t for k in ["awesome", "great", "excited", "love", "fantastic", "thanks"]):
+        sentiment = "excited"
+    else:
+        sentiment = "neutral"
+
+    first_line = text.split("\n")[0].strip()
+    title = first_line[:60] if first_line else "Untitled Feedback"
+    summary = text[:120].strip()
+
+    return {
+        "title": title,
+        "category": category,
+        "importance": importance,
+        "difficulty": difficulty,
+        "eta": eta,
+        "summary": summary,
+        "sentiment": sentiment,
+        "duplicate_of": None,
+    }
+
+
 async def analyze_items(items):
     """Send feedback to the agent in resilient batches, using SQLite cache."""
+    has_key = bool(os.getenv("GEMINI_API_KEY"))
     try:
         from google.antigravity import Agent, LocalAgentConfig
-        has_sdk = True
+        has_sdk = has_key
     except (ImportError, ModuleNotFoundError):
         print("[warn] google-antigravity SDK not installed — generating fallback cards")
         has_sdk = False
@@ -166,31 +221,14 @@ async def analyze_items(items):
                     except Exception as e:
                         print("[warn] batch triage failed (%s) — generating fallback cards for batch" % e)
                         for item in chunk:
-                            new_rows.append({
-                                "id": item["id"],
-                                "title": item["text"][:50] or "Untitled",
-                                "category": "other",
-                                "importance": "medium",
-                                "difficulty": "medium",
-                                "eta": "days",
-                                "summary": item["text"][:100],
-                                "sentiment": "neutral",
-                                "duplicate_of": None,
-                            })
+                            h = heuristic_classify(item["text"])
+                            h["id"] = item["id"]
+                            new_rows.append(h)
         else:
             for item in payload:
-                first_line = item["text"].split("\n")[0][:60]
-                new_rows.append({
-                    "id": item["id"],
-                    "title": first_line or "Untitled Feedback",
-                    "category": "other",
-                    "importance": "medium",
-                    "difficulty": "medium",
-                    "eta": "days",
-                    "summary": item["text"][:120],
-                    "sentiment": "neutral",
-                    "duplicate_of": None,
-                })
+                h = heuristic_classify(item["text"])
+                h["id"] = item["id"]
+                new_rows.append(h)
 
     all_rows = cached_rows + new_rows
     if has_sdk and new_rows and len(all_rows) > 1:
@@ -219,8 +257,21 @@ async def summarize_cards(cards):
             "mood": {"frustrated": 33, "neutral": 34, "excited": 33},
         }
 
-    async with Agent(LocalAgentConfig(
-            **agent_config("You write crisp executive briefs. Strict JSON only."))) as agent:
-        response = await agent.chat(SUMMARY_PROMPT.format(
-            cards=json.dumps([asdict(c) for c in cards], ensure_ascii=False)))
-        return extract_json(await response.text())
+    try:
+        async with Agent(LocalAgentConfig(
+                **agent_config("You write crisp executive briefs. Strict JSON only."))) as agent:
+            response = await agent.chat(SUMMARY_PROMPT.format(
+                cards=json.dumps([asdict(c) for c in cards], ensure_ascii=False)))
+            return extract_json(await response.text())
+    except Exception as e:
+        print("[warn] executive summary agent call failed (%s) — using summary fallback" % e)
+        high_count = sum(1 for c in cards if c.importance == "high")
+        return {
+            "headline": f"Triaged {len(cards)} feedback items ({high_count} high priority).",
+            "bullets": [
+                f"Collected {len(cards)} items across connected feedback channels.",
+                "Review triaged feedback items below.",
+                "Filter by category, importance, or source.",
+            ],
+            "mood": {"frustrated": 33, "neutral": 34, "excited": 33},
+        }

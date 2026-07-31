@@ -8,7 +8,7 @@ with a Google Antigravity SDK agent, and renders a filterable HTML dashboard.
 Usage:
     export GEMINI_API_KEY="your_key"
     python radar.py                 # real sources
-    python radar.py --demo          # offline demo, no API key needed
+    python radar.py --demo          # live repo preview (google-antigravity/antigravity-sdk-python)
     python radar.py --serve         # rebuild daily via SDK triggers
 
 Environment variables:
@@ -107,7 +107,7 @@ def main():
         serve()
         return 0
     if "--demo" in sys.argv:
-        print("[demo] offline mode — no API key needed")
+        print("[demo] live repo preview (google-antigravity/antigravity-sdk-python)")
         cards, summary = demo_data()
     else:
         if not os.getenv("GEMINI_API_KEY"):
