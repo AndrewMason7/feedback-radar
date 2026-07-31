@@ -117,7 +117,12 @@ async def deduplicate_cards_global(rows):
 
 async def analyze_items(items):
     """Send feedback to the agent in resilient batches, using SQLite cache."""
-    from google.antigravity import Agent, LocalAgentConfig
+    try:
+        from google.antigravity import Agent, LocalAgentConfig
+        has_sdk = True
+    except (ImportError, ModuleNotFoundError):
+        print("[warn] google-antigravity SDK not installed — generating fallback cards")
+        has_sdk = False
 
     db.init_db()
     items_dict = {it.id: it for it in items}
@@ -140,40 +145,55 @@ async def analyze_items(items):
             {"id": it.id, "source": it.source, "author": it.author, "text": it.text}
             for it in uncached_items
         ]
-        async with Agent(LocalAgentConfig(**agent_config(SYSTEM_TRIAGE))) as agent:
-            for i in range(0, len(payload), ANALYSIS_BATCH):
-                chunk = payload[i:i + ANALYSIS_BATCH]
-                known = [{"id": r.get("id"), "title": r.get("title")}
-                         for r in (cached_rows + new_rows) if not r.get("duplicate_of")]
-                print("[..] triaging uncached items %d-%d of %d..."
-                      % (i + 1, i + len(chunk), len(payload)))
-                
-                try:
-                    response = await agent.chat(ANALYSIS_PROMPT.format(
-                        items=json.dumps(chunk, ensure_ascii=False, indent=2),
-                        known=json.dumps(known, ensure_ascii=False)))
-                    extracted = extract_json(await response.text())
-                    if isinstance(extracted, list):
-                        new_rows.extend(extracted)
-                    elif isinstance(extracted, dict):
-                        new_rows.append(extracted)
-                except Exception as e:
-                    print("[warn] batch triage failed (%s) — generating fallback cards for batch" % e)
-                    for item in chunk:
-                        new_rows.append({
-                            "id": item["id"],
-                            "title": item["text"][:50] or "Untitled",
-                            "category": "other",
-                            "importance": "medium",
-                            "difficulty": "medium",
-                            "eta": "days",
-                            "summary": item["text"][:100],
-                            "sentiment": "neutral",
-                            "duplicate_of": None,
-                        })
+        if has_sdk:
+            async with Agent(LocalAgentConfig(**agent_config(SYSTEM_TRIAGE))) as agent:
+                for i in range(0, len(payload), ANALYSIS_BATCH):
+                    chunk = payload[i:i + ANALYSIS_BATCH]
+                    known = [{"id": r.get("id"), "title": r.get("title")}
+                             for r in (cached_rows + new_rows) if not r.get("duplicate_of")]
+                    print("[..] triaging uncached items %d-%d of %d..."
+                          % (i + 1, i + len(chunk), len(payload)))
+                    
+                    try:
+                        response = await agent.chat(ANALYSIS_PROMPT.format(
+                            items=json.dumps(chunk, ensure_ascii=False, indent=2),
+                            known=json.dumps(known, ensure_ascii=False)))
+                        extracted = extract_json(await response.text())
+                        if isinstance(extracted, list):
+                            new_rows.extend(extracted)
+                        elif isinstance(extracted, dict):
+                            new_rows.append(extracted)
+                    except Exception as e:
+                        print("[warn] batch triage failed (%s) — generating fallback cards for batch" % e)
+                        for item in chunk:
+                            new_rows.append({
+                                "id": item["id"],
+                                "title": item["text"][:50] or "Untitled",
+                                "category": "other",
+                                "importance": "medium",
+                                "difficulty": "medium",
+                                "eta": "days",
+                                "summary": item["text"][:100],
+                                "sentiment": "neutral",
+                                "duplicate_of": None,
+                            })
+        else:
+            for item in payload:
+                first_line = item["text"].split("\n")[0][:60]
+                new_rows.append({
+                    "id": item["id"],
+                    "title": first_line or "Untitled Feedback",
+                    "category": "other",
+                    "importance": "medium",
+                    "difficulty": "medium",
+                    "eta": "days",
+                    "summary": item["text"][:120],
+                    "sentiment": "neutral",
+                    "duplicate_of": None,
+                })
 
     all_rows = cached_rows + new_rows
-    if new_rows and len(all_rows) > 1:
+    if has_sdk and new_rows and len(all_rows) > 1:
         print("[..] running Pass 2 global deduplication engine across %d cards..." % len(all_rows))
         all_rows = await deduplicate_cards_global(all_rows)
 
@@ -184,7 +204,20 @@ async def analyze_items(items):
 
 async def summarize_cards(cards):
     """The executive morning brief."""
-    from google.antigravity import Agent, LocalAgentConfig
+    try:
+        from google.antigravity import Agent, LocalAgentConfig
+    except (ImportError, ModuleNotFoundError):
+        print("[warn] google-antigravity SDK not installed — using summary fallback")
+        high_count = sum(1 for c in cards if c.importance == "high")
+        return {
+            "headline": f"Triaged {len(cards)} feedback items ({high_count} high priority).",
+            "bullets": [
+                f"Collected {len(cards)} items across connected feedback channels.",
+                "Install google-antigravity package for AI-synthesized executive briefs.",
+                "Filter and inspect triaged items below.",
+            ],
+            "mood": {"frustrated": 33, "neutral": 34, "excited": 33},
+        }
 
     async with Agent(LocalAgentConfig(
             **agent_config("You write crisp executive briefs. Strict JSON only."))) as agent:
