@@ -41,23 +41,23 @@ python radar.py
 python radar.py --serve
 ```
 
-Runs once immediately, then rebuilds every `SIGNAL_SERVE_INTERVAL` seconds
+Runs once immediately, then rebuilds every `RADAR_SERVE_INTERVAL` seconds
 (default: 86400 = daily) using the SDK's official `every()` trigger mechanism.
 
 ### Sources (environment variables)
 
 | Variable | Description | Default |
 |---|---|---|
-| `SIGNAL_GITHUB_REPO` | Public repo `owner/repo` (no token needed) | `google-antigravity/antigravity-sdk-python` |
-| `SIGNAL_SHEET_CSV` | Published Google Sheet CSV URL | local `sample_feedback.csv` |
-| `SIGNAL_GMAIL_QUERY` | Gmail search query | `label:feedback newer_than:30d` |
-| `SIGNAL_MODEL` | Override the model | SDK default |
-| `SIGNAL_SERVE_INTERVAL` | Seconds between rebuilds in `--serve` mode | `86400` |
+| `RADAR_GITHUB_REPO` | Public repo `owner/repo` (no token needed) | `google-antigravity/antigravity-sdk-python` |
+| `RADAR_SHEET_CSV` | Published Google Sheet CSV URL | local `sample_feedback.csv` |
+| `RADAR_GMAIL_QUERY` | Gmail search query | `label:feedback newer_than:30d` |
+| `RADAR_MODEL` | Override the model | SDK default |
+| `RADAR_SERVE_INTERVAL` | Seconds between rebuilds in `--serve` mode | `86400` |
 
 ### Google Sheets as a source
 1. Open the sheet (e.g. Google Form responses)
 2. **File → Share → Publish to web → CSV**
-3. Set `SIGNAL_SHEET_CSV` to that link
+3. Set `RADAR_SHEET_CSV` to that link
 
 Expected columns: `feedback, author, date` (lenient — falls back to the first column).
 

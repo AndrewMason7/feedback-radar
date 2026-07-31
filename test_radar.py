@@ -1,5 +1,4 @@
 """Unit tests for Radar — no network, no API key required."""
-import json
 import sys
 from pathlib import Path
 

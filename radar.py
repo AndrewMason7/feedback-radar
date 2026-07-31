@@ -12,11 +12,11 @@ Usage:
     python radar.py --serve         # rebuild daily via SDK triggers
 
 Environment variables:
-    SIGNAL_GITHUB_REPO="owner/repo"     public GitHub repo (no token needed)
-    SIGNAL_SHEET_CSV="https://..."      published Google Sheet CSV URL
-    SIGNAL_GMAIL_QUERY="label:..."      Gmail search query
-    SIGNAL_MODEL="model-name"           override the SDK default model
-    SIGNAL_SERVE_INTERVAL="86400"       seconds between rebuilds in --serve mode
+    RADAR_GITHUB_REPO="owner/repo"     public GitHub repo (no token needed)
+    RADAR_SHEET_CSV="https://..."      published Google Sheet CSV URL
+    RADAR_GMAIL_QUERY="label:..."      Gmail search query
+    RADAR_MODEL="model-name"           override the SDK default model
+    RADAR_SERVE_INTERVAL="86400"       seconds between rebuilds in --serve mode
 """
 import asyncio
 import csv
@@ -29,12 +29,13 @@ import urllib.request
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-GITHUB_REPO = os.getenv("SIGNAL_GITHUB_REPO", "google-antigravity/antigravity-sdk-python")
-SHEET_CSV_URL = os.getenv("SIGNAL_SHEET_CSV", "")
-GMAIL_QUERY = os.getenv("SIGNAL_GMAIL_QUERY", "label:feedback newer_than:30d")
+GITHUB_REPO = os.getenv("RADAR_GITHUB_REPO", "google-antigravity/antigravity-sdk-python")
+SHEET_CSV_URL = os.getenv("RADAR_SHEET_CSV", "")
+GMAIL_QUERY = os.getenv("RADAR_GMAIL_QUERY", "label:feedback newer_than:30d")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-MODEL = os.getenv("SIGNAL_MODEL", "")  # empty = use the SDK default
+MODEL = os.getenv("RADAR_MODEL", "")  # empty = use the SDK default
 MAX_GITHUB_ITEMS = 25
 MAX_SHEET_BYTES = 2_000_000   # cap downloads so a bad URL cannot exhaust memory
 ANALYSIS_BATCH = 10           # items per agent call — big single prompts get truncated
@@ -72,7 +73,7 @@ class Card:
     source: str
     url: str
     author: str
-    duplicate_of: str = None
+    duplicate_of: Optional[str] = None
     dup_count: int = 0
 
 
@@ -157,7 +158,7 @@ def fetch_google_sheet(csv_url="", local_csv=None):
 
 def fetch_gmail(max_results=25):
     """
-    Optional source: read Gmail messages matching SIGNAL_GMAIL_QUERY.
+    Optional source: read Gmail messages matching RADAR_GMAIL_QUERY.
     One-time setup:
         pip install google-api-python-client google-auth-oauthlib
         enable the Gmail API in Google Cloud Console and place credentials.json
@@ -868,7 +869,7 @@ async def run_real():
 
 
 # ----------------------------- Scheduled rebuilds -----------------------------
-SERVE_INTERVAL = float(os.getenv("SIGNAL_SERVE_INTERVAL", "86400"))  # daily by default
+SERVE_INTERVAL = float(os.getenv("RADAR_SERVE_INTERVAL", "86400"))  # daily by default
 
 
 async def rebuild_now():
@@ -893,10 +894,11 @@ async def _scheduled_rebuild(ctx):
 
 def serve():
     """
-    Long-running mode: rebuilds the dashboard every SIGNAL_SERVE_INTERVAL
+    Long-running mode: rebuilds the dashboard every RADAR_SERVE_INTERVAL
     seconds (default: daily) using the SDK trigger system — the same
     `every()` mechanism from the official docs.
     """
+    from google.antigravity import LocalAgentConfig
     from google.antigravity.triggers import every
     from google.antigravity.utils.interactive import run_interactive_loop
 
