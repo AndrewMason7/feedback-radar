@@ -24,12 +24,17 @@ def fetch_gmail(max_results=25):
     token_file = BASE_DIR / "token.json"
     cred_file = BASE_DIR / "credentials.json"
     if token_file.exists():
-        creds = Credentials.from_authorized_user_file(str(token_file), GMAIL_SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(str(token_file), GMAIL_SCOPES)
+        except Exception as e:
+            print("[warn] Gmail: could not load token.json (%s) — falling back to OAuth flow" % e)
+            creds = None
     if creds and creds.expired and creds.refresh_token:
         try:
             from google.auth.transport.requests import Request
             creds.refresh(Request())
             token_file.write_text(creds.to_json(), encoding="utf-8")
+            os.chmod(token_file, 0o600)
         except Exception as e:
             print("[warn] Gmail: token refresh failed (%s) — falling back to OAuth flow" % e)
             creds = None
@@ -37,10 +42,14 @@ def fetch_gmail(max_results=25):
         if not cred_file.exists():
             print("[skip] Gmail: no credentials.json found — skipping")
             return []
-        flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), GMAIL_SCOPES)
-        creds = flow.run_local_server(port=0)
-        token_file.write_text(creds.to_json(), encoding="utf-8")
-        os.chmod(token_file, 0o600)
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), GMAIL_SCOPES)
+            creds = flow.run_local_server(port=0)
+            token_file.write_text(creds.to_json(), encoding="utf-8")
+            os.chmod(token_file, 0o600)
+        except Exception as e:
+            print("[warn] Gmail: OAuth flow failed (%s) — skipping" % e)
+            return []
 
     try:
         service = build("gmail", "v1", credentials=creds)
@@ -57,7 +66,7 @@ def fetch_gmail(max_results=25):
                 subject = headers.get("Subject", "(no subject)")
                 sender = headers.get("From", "unknown").split("<")[0].strip() or "unknown"
                 items.append(FeedbackItem(
-                    id="gm-%d" % (i + 1),
+                    id="gm-%s" % m["id"],
                     source="Gmail",
                     author=sender,
                     text=("%s\n\n%s" % (subject, msg.get("snippet", ""))).strip()[:1500],

@@ -2,6 +2,7 @@
 Database persistence layer for Radar — prevents redundant LLM triage calls by caching
 triaged Card objects indexed by feedback item ID and content hash.
 """
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -19,7 +20,7 @@ def get_db_connection(db_path=None):
 
 
 def init_db(db_path=None):
-    with get_db_connection(db_path) as conn:
+    with contextlib.closing(get_db_connection(db_path)) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cached_cards (
                 id TEXT PRIMARY KEY,
@@ -39,7 +40,7 @@ def hash_text(text: str) -> str:
 def get_cached_card(item_id: str, text: str, db_path=None):
     """Return dict of card attributes if cached and text hash matches, else None."""
     t_hash = hash_text(text)
-    with get_db_connection(db_path) as conn:
+    with contextlib.closing(get_db_connection(db_path)) as conn:
         cur = conn.cursor()
         cur.execute("SELECT text_hash, card_json FROM cached_cards WHERE id = ?", (item_id,))
         row = cur.fetchone()
@@ -53,7 +54,7 @@ def get_cached_card(item_id: str, text: str, db_path=None):
 
 def save_cached_cards(cards, items_dict, db_path=None):
     """Save triaged cards into the cache."""
-    with get_db_connection(db_path) as conn:
+    with contextlib.closing(get_db_connection(db_path)) as conn:
         cur = conn.cursor()
         for card in cards:
             src_item = items_dict.get(card.id)

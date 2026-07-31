@@ -13,7 +13,7 @@ FILTER_JS = "<script>\n" + (UI_DIR / "static" / "app.js").read_text(encoding="ut
 
 def safe_url(url: str) -> str:
     url_str = (url or "").strip()
-    if url_str.startswith("http://") or url_str.startswith("https://"):
+    if url_str.lower().startswith(("http://", "https://")):
         return url_str
     return ""
 
@@ -93,14 +93,25 @@ def render_filters(cards):
 
 
 def render_dashboard(cards, summary, generated_at):
+    if not isinstance(summary, dict):
+        summary = {}
     mains = [c for c in cards if not c.duplicate_of]
     dups = [c for c in cards if c.duplicate_of]
     mains.sort(key=lambda c: (IMP_ORDER.get(c.importance, 1), -c.dup_count))
     quick_wins = [c for c in mains if c.importance == "high" and c.difficulty == "easy"]
-    mood_raw = summary.get("mood", {}) if isinstance(summary, dict) else {}
+    mood_raw = summary.get("mood")
+    if not isinstance(mood_raw, dict):
+        mood_raw = {}
     mood = {"frustrated": safe_int(mood_raw.get("frustrated"), 33),
             "neutral": safe_int(mood_raw.get("neutral"), 34),
             "excited": safe_int(mood_raw.get("excited"), 33)}
+    total = sum(mood.values())
+    if total == 0:
+        mood = {"frustrated": 33, "neutral": 34, "excited": 33}
+    elif total != 100:
+        largest = max(mood, key=mood.get)
+        mood = {k: int(round(v * 100 / total)) for k, v in mood.items()}
+        mood[largest] += 100 - sum(mood.values())
     bullets = "".join("<li>%s</li>" % esc(b) for b in summary.get("bullets", []))
 
     qw_html = ""

@@ -28,22 +28,32 @@ from fetchers import (
     fetch_github_issues, fetch_google_sheet, fetch_gmail, demo_data
 )
 from engine import analyze_items, summarize_cards
+from engine.triage import resolve_api_key
 from ui import render_dashboard
 
 BASE_DIR = Path(__file__).parent
 ENV_FILE = BASE_DIR / ".env"
 if ENV_FILE.exists():
-    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+    for line in ENV_FILE.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip().strip("'\"")
+            k, v = k.strip(), v.strip()
+            if not (v.startswith("'") or v.startswith('"')):
+                v = v.split(" #", 1)[0].strip()
+            v = v.strip("'\"")
             if k and not os.getenv(k):
                 os.environ[k] = v
 
 GITHUB_REPO = os.getenv("RADAR_GITHUB_REPO", "google-antigravity/antigravity-sdk-python")
 SHEET_CSV_URL = os.getenv("RADAR_SHEET_CSV", "")
-SERVE_INTERVAL = float(os.getenv("RADAR_SERVE_INTERVAL", "86400"))
+try:
+    SERVE_INTERVAL = float(os.getenv("RADAR_SERVE_INTERVAL", "86400"))
+except ValueError:
+    print("[warn] invalid RADAR_SERVE_INTERVAL — falling back to 86400 seconds")
+    SERVE_INTERVAL = 86400.0
 SAMPLE_CSV = BASE_DIR / "sample_feedback.csv"
 OUTPUT_HTML = BASE_DIR / "dashboard.html"
 
@@ -103,21 +113,31 @@ async def _scheduled_rebuild(ctx):
 
 def serve():
     """Long-running mode: rebuilds the dashboard every RADAR_SERVE_INTERVAL seconds."""
-    from google.antigravity import LocalAgentConfig
+    from google.antigravity import Agent, LocalAgentConfig
     from google.antigravity.triggers import every
-    from google.antigravity.utils.interactive import run_interactive_loop
 
     print("[ok] serve mode — rebuilding every %.0f seconds" % SERVE_INTERVAL)
     print("[ok] initial build starting now...")
-    asyncio.run(rebuild_now())
+    if not asyncio.run(rebuild_now()):
+        print("[warn] initial build found no feedback — will retry on schedule")
     config = LocalAgentConfig(triggers=[every(SERVE_INTERVAL, _scheduled_rebuild)])
-    asyncio.run(run_interactive_loop(config))
+
+    async def _keep_alive():
+        # The Agent context starts the TriggerRunner and stops it on exit;
+        # park on a never-set event so serve mode stays alive headless.
+        async with Agent(config):
+            await asyncio.Event().wait()
+
+    try:
+        asyncio.run(_keep_alive())
+    except KeyboardInterrupt:
+        print("[ok] serve mode stopped")
 
 
 def main():
     if "--serve" in sys.argv:
-        if not os.getenv("GEMINI_API_KEY"):
-            print("[err] set GEMINI_API_KEY first for serve mode")
+        if not resolve_api_key():
+            print("[err] set RADAR_API_KEY or GEMINI_API_KEY first for serve mode")
             return 1
         serve()
         return 0
@@ -125,8 +145,8 @@ def main():
         print("[demo] live repo preview (google-antigravity/antigravity-sdk-python)")
         cards, summary = demo_data()
     else:
-        if not os.getenv("GEMINI_API_KEY"):
-            print("[err] set GEMINI_API_KEY first, or run offline: python radar.py --demo")
+        if not resolve_api_key():
+            print("[err] set RADAR_API_KEY or GEMINI_API_KEY first, or run offline: python radar.py --demo")
             return 1
         result = asyncio.run(run_real())
         if not result:

@@ -4,6 +4,7 @@ Google Sheets CSV fetcher module with smart column length detection.
 import csv
 import io
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from models import FeedbackItem
@@ -26,13 +27,33 @@ def fetch_google_sheet(csv_url="", local_csv=None):
                 try:
                     req = urllib.request.Request(csv_url, headers={"User-Agent": "feedback-radar"})
                     with urllib.request.urlopen(req, timeout=30) as resp:
-                        content = resp.read(MAX_SHEET_BYTES).decode("utf-8-sig", errors="replace")
+                        ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                        if ctype and ctype not in ("text/csv", "text/tab-separated-values", "application/octet-stream"):
+                            print("[warn] Google Sheet: unexpected content-type '%s' — skipping" % ctype)
+                            return []
+                        raw = resp.read(MAX_SHEET_BYTES + 1)
+                    if len(raw) > MAX_SHEET_BYTES:
+                        raw = raw[:MAX_SHEET_BYTES].rsplit(b"\n", 1)[0]  # drop final partial line
+                        print("[warn] Google Sheet: exceeded %d bytes — truncated to whole rows" % MAX_SHEET_BYTES)
+                    content = raw.decode("utf-8-sig", errors="replace")
                     break
+                except urllib.error.HTTPError as e:
+                    last_err = e
+                    e.close()
+                    if e.code in (401, 403, 404, 422):  # deterministic — retrying won't help
+                        break
+                    if attempt < 2:
+                        time.sleep(0.5 * (2 ** attempt))
                 except Exception as e:
                     last_err = e
-                    time.sleep(0.5 * (2 ** attempt))
+                    if attempt < 2:
+                        time.sleep(0.5 * (2 ** attempt))
             if content is None:
                 print("[warn] Google Sheet: could not fetch (%s) — continuing without it" % last_err)
+                return []
+            first_line = next((l for l in content.splitlines() if l.strip()), "")
+            if first_line.lstrip().startswith("<"):
+                print("[warn] Google Sheet: response looks like HTML, not CSV — skipping")
                 return []
             rows = list(csv.DictReader(io.StringIO(content)))
         elif local_csv and Path(local_csv).exists():
@@ -62,12 +83,14 @@ def fetch_google_sheet(csv_url="", local_csv=None):
             for k, v in r.items():
                 if k:
                     col_lengths[k] = col_lengths.get(k, 0) + len(str(v or ""))
-        default_text_key = max(col_lengths, key=col_lengths.get) if col_lengths else next(iter(rows[0]))
+        default_text_key = max(col_lengths, key=col_lengths.get) if col_lengths else next((k for k in rows[0] if k), None)
 
     items = []
     for i, row in enumerate(rows):
         keys = {k.strip().lower(): k for k in row.keys() if k}
         text_key = pick(keys, "feedback", "text", "message", "comment", "description", "details", "thoughts", "review") or default_text_key
+        if text_key is None:
+            continue
         author_key = pick(keys, "author", "name", "user")
         date_key = pick(keys, "date", "timestamp")
         text = (row.get(text_key) or "").strip()

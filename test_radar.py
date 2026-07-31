@@ -152,21 +152,71 @@ def test_agent_config_always_has_system_instructions():
     from engine import agent_config
     cfg = agent_config("test prompt")
     assert cfg["system_instructions"] == "test prompt"
-    # retry/hooks only appear when SDK v0.1.9+ is installed
-    if "retry_config" in cfg:
-        assert cfg["retry_config"] is not None
-    if "hooks" in cfg:
-        assert len(cfg["hooks"]) == 1
+    try:
+        from google.antigravity import RetryConfig
+        from google.antigravity.hooks import OnToolErrorHook
+    except ImportError:
+        return  # SDK absent — retry/hooks legitimately skipped
+    # hooks must be real hook instances — the SDK dispatches via isinstance
+    assert isinstance(cfg["retry_config"], RetryConfig)
+    assert isinstance(cfg["hooks"][0], OnToolErrorHook)
 
 
 def test_serve_interval_defaults_to_daily():
+    import importlib
+    import os
     import radar
-    assert radar.SERVE_INTERVAL == 86400.0
+    saved = os.environ.pop("RADAR_SERVE_INTERVAL", None)
+    try:
+        importlib.reload(radar)
+        assert radar.SERVE_INTERVAL == 86400.0
+    finally:
+        if saved is not None:
+            os.environ["RADAR_SERVE_INTERVAL"] = saved
+        importlib.reload(radar)
 
 
 def test_retry_policy_degrades_gracefully():
     from engine import build_retry_policy
-    build_retry_policy()
+    retry = build_retry_policy()
+    if retry is None:
+        return  # SDK absent — degraded path is valid
+    from google.antigravity import RetryConfig
+    assert isinstance(retry, RetryConfig)
+    assert retry.api_retry.max_retries == 3
+
+
+def test_tool_error_hook_recovers_tool_errors():
+    import asyncio
+    from engine import build_tool_error_hook
+    hook = build_tool_error_hook()
+    if hook is None:
+        return  # SDK absent
+    from google.antigravity import ToolExecutionError
+    out = asyncio.run(hook(ToolExecutionError("msg", "tool_name")))
+    assert out == "[Recovered from a tool error in 'tool_name'. Continue with data available.]"
+    assert asyncio.run(hook(ValueError("boom"))) is None
+
+
+def test_agent_config_passes_through_schema_and_key():
+    from engine import agent_config
+    cfg = agent_config("prompt", response_schema={"type": "object"}, api_key="k")
+    assert cfg["response_schema"] == {"type": "object"}
+    assert cfg["api_key"] == "k"
+
+
+def test_agent_config_honors_model_env_at_call_time():
+    import os
+    from engine import agent_config
+    saved = os.environ.get("RADAR_MODEL")
+    os.environ["RADAR_MODEL"] = "test-model-x"
+    try:
+        assert agent_config("prompt")["model"] == "test-model-x"
+    finally:
+        if saved is None:
+            os.environ.pop("RADAR_MODEL", None)
+        else:
+            os.environ["RADAR_MODEL"] = saved
 
 
 # ---------- SQLite Caching Tests ----------

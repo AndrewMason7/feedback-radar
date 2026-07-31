@@ -29,12 +29,15 @@ def fetch_github_issues(repo, limit=MAX_GITHUB_ITEMS):
                 break
         except urllib.error.HTTPError as e:
             last_err = e
+            e.close()
             if e.code in (401, 404, 422):  # deterministic — retrying won't help
                 break
-            time.sleep(0.5 * (2 ** attempt))
+            if attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
         except Exception as e:
             last_err = e
-            time.sleep(0.5 * (2 ** attempt))
+            if attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
 
     if data is None:
         print("[warn] GitHub: could not fetch %s (%s) — continuing without it" % (repo, last_err))

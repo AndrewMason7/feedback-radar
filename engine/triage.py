@@ -78,20 +78,31 @@ def extract_json(text):
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    start = min([i for i in (text.find("["), text.find("{")) if i != -1], default=-1)
-    if start == -1:
-        raise ValueError("no JSON found in response: %s..." % text[:120])
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(text[start:])
-        return obj
-    except json.JSONDecodeError:
-        pass
-    for end in range(len(text), start, -1):
+
+    def _valid(obj):
+        return isinstance(obj, dict) or (
+            isinstance(obj, list) and all(isinstance(x, dict) for x in obj))
+
+    search_from = 0
+    while True:
+        starts = [i for i in (text.find("[", search_from), text.find("{", search_from)) if i != -1]
+        if not starts:
+            raise ValueError("no JSON found in response: %s..." % text[:120])
+        start = min(starts)
+        obj = None
         try:
-            return json.loads(text[start:end])
+            obj, _ = json.JSONDecoder().raw_decode(text[start:])
         except json.JSONDecodeError:
-            continue
-    raise ValueError("malformed JSON in response")
+            # Bounded retry: trim trailing junk to the last closer and try once more.
+            end = max(text.rfind("]"), text.rfind("}"))
+            if end > start:
+                try:
+                    obj = json.loads(text[start:end + 1])
+                except json.JSONDecodeError:
+                    obj = None
+        if obj is not None and _valid(obj):
+            return obj
+        search_from = start + 1
 
 
 def rows_to_cards(rows, items):
@@ -99,6 +110,8 @@ def rows_to_cards(rows, items):
     by_id = {it.id: it for it in items}
     cards = []
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         src = by_id.get(row.get("id"))
         if not src:
             continue
@@ -123,13 +136,19 @@ def rows_to_cards(rows, items):
         if not c.duplicate_of or c.duplicate_of not in valid_ids or c.duplicate_of == c.id:
             c.duplicate_of = None
 
-    def root_of(c, _depth=0):
-        if _depth > 20 or not c.duplicate_of:
-            return c.duplicate_of
-        target = card_by_id.get(c.duplicate_of)
-        if target and target.duplicate_of:
-            return root_of(target, _depth + 1)
-        return c.duplicate_of
+    def root_of(c):
+        seen = {c.id}
+        while c.duplicate_of:
+            if c.duplicate_of in seen:
+                # cycle detected — break the link so cycle members stay on the board
+                c.duplicate_of = None
+                return None
+            seen.add(c.duplicate_of)
+            target = card_by_id.get(c.duplicate_of)
+            if not target or not target.duplicate_of:
+                return c.duplicate_of
+            c = target
+        return None
 
     for c in cards:
         if c.duplicate_of:
@@ -165,7 +184,7 @@ async def deduplicate_cards_global(rows):
                 if isinstance(dedup_results, list):
                     dedup_map = {item.get("id"): item.get("duplicate_of") for item in dedup_results if isinstance(item, dict) and "id" in item}
                     for r in rows:
-                        if r.get("id") in dedup_map:
+                        if r.get("id") in dedup_map and dedup_map[r["id"]] is not None:
                             r["duplicate_of"] = dedup_map[r["id"]]
     except Exception as e:
         print("[warn] global deduplication pass skipped (%s) — keeping pass 1 links" % e)
@@ -174,37 +193,40 @@ async def deduplicate_cards_global(rows):
 
 def heuristic_classify(text: str) -> dict:
     t = text.lower()
-    
-    if any(k in t for k in ["bug", "crash", "error", "fail", "broken", "hang", "freeze", "issue", "exception", "fault"]):
+
+    def _has(keywords):
+        return any(re.search(r"\b%s\b" % re.escape(k), t) for k in keywords)
+
+    if _has(["bug", "crash", "error", "fail", "broken", "hang", "freeze", "issue", "exception", "fault"]):
         category = "bug"
-    elif any(k in t for k in ["feature", "add", "support", "request", "allow", "enable", "would be", "option", "new"]):
+    elif _has(["feature", "add", "support", "request", "allow", "enable", "would be", "option", "new"]):
         category = "feature"
-    elif any(k in t for k in ["doc", "readme", "example", "guide", "tutorial", "instruction", "explain"]):
+    elif _has(["doc", "readme", "example", "guide", "tutorial", "instruction", "explain"]):
         category = "docs"
-    elif any(k in t for k in ["praise", "great", "awesome", "love", "thanks", "replaced", "fantastic", "amazing"]):
+    elif _has(["praise", "great", "awesome", "love", "thanks", "replaced", "fantastic", "amazing"]):
         category = "praise"
-    elif any(k in t for k in ["how", "what", "why", "can i", "where", "question"]):
+    elif _has(["how", "what", "why", "can i", "where", "question"]):
         category = "question"
     else:
         category = "other"
 
-    if any(k in t for k in ["crash", "hang", "freeze", "urgent", "critical", "broken", "unblock", "high", "serious"]):
+    if _has(["crash", "hang", "freeze", "urgent", "critical", "broken", "unblock", "high", "serious"]):
         importance = "high"
-    elif any(k in t for k in ["minor", "typo", "low", "cosmetic", "small"]):
+    elif _has(["minor", "typo", "low", "cosmetic", "small"]):
         importance = "low"
     else:
         importance = "medium"
 
-    if any(k in t for k in ["doc", "typo", "readme", "example", "rename", "export", "simple", "easy"]):
+    if _has(["doc", "typo", "readme", "example", "rename", "export", "simple", "easy"]):
         difficulty, eta = "easy", "hours"
-    elif any(k in t for k in ["ts", "typescript", "compiler", "architecture", "rewrite", "hard", "complex"]):
+    elif _has(["typescript", "compiler", "architecture", "rewrite", "hard", "complex"]):
         difficulty, eta = "hard", "weeks"
     else:
         difficulty, eta = "medium", "days"
 
-    if any(k in t for k in ["hang", "freeze", "frustrated", "confusing", "error", "fail", "cant", "cannot", "broken"]):
+    if _has(["hang", "freeze", "frustrated", "confusing", "error", "fail", "cant", "can't", "cannot", "broken"]):
         sentiment = "frustrated"
-    elif any(k in t for k in ["awesome", "great", "excited", "love", "fantastic", "thanks"]):
+    elif _has(["awesome", "great", "excited", "love", "fantastic", "thanks"]):
         sentiment = "excited"
     else:
         sentiment = "neutral"
@@ -273,7 +295,7 @@ async def analyze_items(items):
                             known=json.dumps(known, ensure_ascii=False)))
                         extracted = await response_payload(response)
                         if isinstance(extracted, list):
-                            new_rows.extend(extracted)
+                            new_rows.extend(r for r in extracted if isinstance(r, dict))
                         elif isinstance(extracted, dict):
                             new_rows.append(extracted)
                     except Exception as e:
@@ -331,7 +353,10 @@ async def summarize_cards(cards):
                 response_schema=SUMMARY_SCHEMA, api_key=resolve_api_key()))) as agent:
             response = await agent.chat(SUMMARY_PROMPT.format(
                 cards=json.dumps([asdict(c) for c in cards], ensure_ascii=False)))
-            return await response_payload(response)
+            payload = await response_payload(response)
+            if not isinstance(payload, dict):
+                raise ValueError("summary payload is not a JSON object")
+            return payload
     except Exception as e:
         print("[warn] executive summary agent call failed (%s) — using summary fallback" % e)
         high_count = sum(1 for c in cards if c.importance == "high")
