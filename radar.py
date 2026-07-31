@@ -30,10 +30,20 @@ from fetchers import (
 from engine import analyze_items, summarize_cards
 from ui import render_dashboard
 
+BASE_DIR = Path(__file__).parent
+ENV_FILE = BASE_DIR / ".env"
+if ENV_FILE.exists():
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip("'\"")
+            if k and not os.getenv(k):
+                os.environ[k] = v
+
 GITHUB_REPO = os.getenv("RADAR_GITHUB_REPO", "google-antigravity/antigravity-sdk-python")
 SHEET_CSV_URL = os.getenv("RADAR_SHEET_CSV", "")
 SERVE_INTERVAL = float(os.getenv("RADAR_SERVE_INTERVAL", "86400"))
-BASE_DIR = Path(__file__).parent
 SAMPLE_CSV = BASE_DIR / "sample_feedback.csv"
 OUTPUT_HTML = BASE_DIR / "dashboard.html"
 

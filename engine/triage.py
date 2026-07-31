@@ -224,6 +224,12 @@ async def analyze_items(items):
                             h = heuristic_classify(item["text"])
                             h["id"] = item["id"]
                             new_rows.append(h)
+                if hasattr(agent, "conversation") and hasattr(agent.conversation, "total_usage") and agent.conversation.total_usage:
+                    u = agent.conversation.total_usage
+                    print("[ok] SDK Token Usage — prompt: %d, output: %d, total: %d"
+                          % (getattr(u, "prompt_token_count", 0),
+                             getattr(u, "candidates_token_count", 0),
+                             getattr(u, "total_token_count", 0)))
         else:
             for item in payload:
                 h = heuristic_classify(item["text"])
