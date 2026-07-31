@@ -31,6 +31,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import db
+
+
 GITHUB_REPO = os.getenv("RADAR_GITHUB_REPO", "google-antigravity/antigravity-sdk-python")
 SHEET_CSV_URL = os.getenv("RADAR_SHEET_CSV", "")
 GMAIL_QUERY = os.getenv("RADAR_GMAIL_QUERY", "label:feedback newer_than:30d")
@@ -78,9 +81,13 @@ class Card:
 
 
 def fetch_github_issues(repo, limit=MAX_GITHUB_ITEMS):
-    """Pull open issues from a public repo (unauthenticated API, fine for demos)."""
+    """Pull open issues from a public repo (supports GITHUB_TOKEN for higher rate limits)."""
     url = "https://api.github.com/repos/%s/issues?state=open&per_page=%d" % (repo, limit)
-    req = urllib.request.Request(url, headers={"User-Agent": "feedback-radar"})
+    headers = {"User-Agent": "feedback-radar"}
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "token %s" % token
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode())
@@ -135,10 +142,24 @@ def fetch_google_sheet(csv_url="", local_csv=None):
                 return keys[cand]
         return None
 
+    if not rows:
+        return []
+
+    # Detect best text_key across rows if standard keywords do not match
+    sample_keys = {k.strip().lower(): k for k in rows[0].keys() if k}
+    default_text_key = pick(sample_keys, "feedback", "text", "message", "comment", "description", "details", "thoughts", "review")
+    if not default_text_key:
+        col_lengths = {}
+        for r in rows:
+            for k, v in r.items():
+                if k:
+                    col_lengths[k] = col_lengths.get(k, 0) + len(str(v or ""))
+        default_text_key = max(col_lengths, key=col_lengths.get) if col_lengths else next(iter(rows[0]))
+
     items = []
     for i, row in enumerate(rows):
         keys = {k.strip().lower(): k for k in row.keys() if k}
-        text_key = pick(keys, "feedback", "text", "message", "comment") or next(iter(row))
+        text_key = pick(keys, "feedback", "text", "message", "comment", "description", "details", "thoughts", "review") or default_text_key
         author_key = pick(keys, "author", "name", "user")
         date_key = pick(keys, "date", "timestamp")
         text = (row.get(text_key) or "").strip()
@@ -247,6 +268,23 @@ Given these triaged feedback cards as JSON, return STRICT JSON ONLY with keys:
 - "bullets": array of exactly 3 short strings (trends, risks, quick wins)
 - "mood": object with integer percentages summing to 100:
   {"frustrated": x, "neutral": y, "excited": z}
+
+Cards:
+{cards}
+"""
+
+DEDUP_PROMPT = """You are a feedback deduplication engine. Given the triaged cards below, identify items that report the EXACT same underlying issue, feature request, or topic.
+
+For each item, determine if it is a duplicate of another item in the list.
+- If an item is unique, return "duplicate_of": null.
+- If items report the same issue, select the earliest/clearest item as ROOT.
+- For all duplicates of that issue, set "duplicate_of" to the ROOT item's "id".
+
+Return STRICT JSON ONLY (a JSON array of objects):
+[
+  {"id": "gh-1", "duplicate_of": null},
+  {"id": "gs-2", "duplicate_of": "gh-1"}
+]
 
 Cards:
 {cards}
@@ -401,27 +439,96 @@ def agent_config(system_instructions):
     return cfg
 
 
-async def analyze_items(items):
-    """Send feedback to the agent in batches; merge into validated Cards."""
+async def deduplicate_cards_global(rows):
+    """Pass 2: Global deduplication engine evaluating duplicate clusters across all cards."""
+    if len(rows) <= 1:
+        return rows
     from google.antigravity import Agent, LocalAgentConfig
 
-    payload = [
-        {"id": it.id, "source": it.source, "author": it.author, "text": it.text}
-        for it in items
-    ]
-    rows = []
-    async with Agent(LocalAgentConfig(**agent_config(SYSTEM_TRIAGE))) as agent:
-        for i in range(0, len(payload), ANALYSIS_BATCH):
-            chunk = payload[i:i + ANALYSIS_BATCH]
-            known = [{"id": r.get("id"), "title": r.get("title")}
-                     for r in rows if not r.get("duplicate_of")]
-            print("[..] triaging items %d-%d of %d..."
-                  % (i + 1, i + len(chunk), len(payload)))
-            response = await agent.chat(ANALYSIS_PROMPT.format(
-                items=json.dumps(chunk, ensure_ascii=False, indent=2),
-                known=json.dumps(known, ensure_ascii=False)))
-            rows.extend(extract_json(await response.text()))
-    return rows_to_cards(rows, items)
+    items_to_check = [{"id": r.get("id"), "title": r.get("title"), "summary": r.get("summary")} for r in rows if r.get("id")]
+    try:
+        async with Agent(LocalAgentConfig(**agent_config("You are a strict deduplication engine. Output JSON only."))) as agent:
+            resp = await agent.chat(DEDUP_PROMPT.format(cards=json.dumps(items_to_check, ensure_ascii=False)))
+            dedup_results = extract_json(await resp.text())
+            if isinstance(dedup_results, list):
+                dedup_map = {item.get("id"): item.get("duplicate_of") for item in dedup_results if isinstance(item, dict) and "id" in item}
+                for r in rows:
+                    if r.get("id") in dedup_map:
+                        r["duplicate_of"] = dedup_map[r["id"]]
+    except Exception as e:
+        print("[warn] global deduplication pass skipped (%s) — keeping pass 1 links" % e)
+    return rows
+
+
+async def analyze_items(items):
+    """
+    Send feedback to the agent in resilient batches, using SQLite cache to skip
+    previously triaged items and fallback gracefully if a batch fails.
+    """
+    from google.antigravity import Agent, LocalAgentConfig
+
+    db.init_db()
+    items_dict = {it.id: it for it in items}
+    cached_rows = []
+    uncached_items = []
+
+    for it in items:
+        cached_dict = db.get_cached_card(it.id, it.text)
+        if cached_dict:
+            cached_rows.append(cached_dict)
+        else:
+            uncached_items.append(it)
+
+    print("[ok] Cache hit for %d/%d items, triaging %d uncached items..."
+          % (len(cached_rows), len(items), len(uncached_items)))
+
+    new_rows = []
+    if uncached_items:
+        payload = [
+            {"id": it.id, "source": it.source, "author": it.author, "text": it.text}
+            for it in uncached_items
+        ]
+        async with Agent(LocalAgentConfig(**agent_config(SYSTEM_TRIAGE))) as agent:
+            for i in range(0, len(payload), ANALYSIS_BATCH):
+                chunk = payload[i:i + ANALYSIS_BATCH]
+                known = [{"id": r.get("id"), "title": r.get("title")}
+                         for r in (cached_rows + new_rows) if not r.get("duplicate_of")]
+                print("[..] triaging uncached items %d-%d of %d..."
+                      % (i + 1, i + len(chunk), len(payload)))
+                
+                try:
+                    response = await agent.chat(ANALYSIS_PROMPT.format(
+                        items=json.dumps(chunk, ensure_ascii=False, indent=2),
+                        known=json.dumps(known, ensure_ascii=False)))
+                    extracted = extract_json(await response.text())
+                    if isinstance(extracted, list):
+                        new_rows.extend(extracted)
+                    elif isinstance(extracted, dict):
+                        new_rows.append(extracted)
+                except Exception as e:
+                    print("[warn] batch triage failed (%s) — generating fallback cards for batch" % e)
+                    for item in chunk:
+                        new_rows.append({
+                            "id": item["id"],
+                            "title": item["text"][:50] or "Untitled",
+                            "category": "other",
+                            "importance": "medium",
+                            "difficulty": "medium",
+                            "eta": "days",
+                            "summary": item["text"][:100],
+                            "sentiment": "neutral",
+                            "duplicate_of": None,
+                        })
+
+    all_rows = cached_rows + new_rows
+    if new_rows and len(all_rows) > 1:
+        print("[..] running Pass 2 global deduplication engine across %d cards..." % len(all_rows))
+        all_rows = await deduplicate_cards_global(all_rows)
+
+    cards = rows_to_cards(all_rows, items)
+    if new_rows:
+        db.save_cached_cards(cards, items_dict)
+    return cards
 
 
 async def summarize_cards(cards):
@@ -852,12 +959,22 @@ def demo_data():
 
 # ----------------------------- Entry point -----------------------------
 async def run_real():
-    items = fetch_github_issues(GITHUB_REPO)
-    items += fetch_gmail()  # optional — skips itself if not configured
+    loop = asyncio.get_running_loop()
+    gh_task = loop.run_in_executor(None, fetch_github_issues, GITHUB_REPO)
+    gmail_task = loop.run_in_executor(None, fetch_gmail)
     if SHEET_CSV_URL:
-        items += fetch_google_sheet(csv_url=SHEET_CSV_URL)
+        sheet_task = loop.run_in_executor(None, fetch_google_sheet, SHEET_CSV_URL)
     elif SAMPLE_CSV.exists():
-        items += fetch_google_sheet(local_csv=SAMPLE_CSV)
+        sheet_task = loop.run_in_executor(None, fetch_google_sheet, "", SAMPLE_CSV)
+    else:
+        async def _empty(): return []
+        sheet_task = _empty()
+
+    gh_items, gmail_items, sheet_items = await asyncio.gather(
+        gh_task, gmail_task, sheet_task
+    )
+    items = (gh_items or []) + (gmail_items or []) + (sheet_items or [])
+
     if not items:
         print("[err] no feedback found — check your sources or run: python radar.py --demo")
         return None
@@ -879,7 +996,8 @@ async def rebuild_now():
         return False
     cards, summary = result
     when = datetime.now().strftime("%Y-%m-%d %H:%M")
-    OUTPUT_HTML.write_text(render_dashboard(cards, summary, when), encoding="utf-8")
+    content = render_dashboard(cards, summary, when)
+    await asyncio.to_thread(OUTPUT_HTML.write_text, content, encoding="utf-8")
     print("[ok] dashboard rebuilt: %s" % OUTPUT_HTML)
     return True
 

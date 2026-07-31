@@ -1,10 +1,10 @@
 """Unit tests for Radar — no network, no API key required."""
 import sys
+import tempfile
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).parent))
+import db
 from radar import (Card, FeedbackItem, extract_json, fetch_google_sheet,
                     normalize, render_card, render_dashboard, rows_to_cards,
                     safe_int, demo_data)
@@ -30,8 +30,11 @@ def test_extract_json_with_chatter():
 
 
 def test_extract_json_broken_raises():
-    with pytest.raises(ValueError):
+    try:
         extract_json("no json here at all")
+        assert False, "Should have raised ValueError"
+    except ValueError:
+        pass
 
 
 # ---------- normalize / safe_int ----------
@@ -81,7 +84,7 @@ def test_invalid_labels_fall_back_safely():
              "difficulty": "???", "eta": "eons", "summary": "s",
              "sentiment": "enraged", "duplicate_of": None}]
     c = rows_to_cards(rows, make_items("a"))[0]
-    assert (c.category, c.importance, c.difficulty, c.eta, c.sentiment) ==            ("other", "medium", "medium", "days", "neutral")
+    assert (c.category, c.importance, c.difficulty, c.eta, c.sentiment) == ("other", "medium", "medium", "days", "neutral")
 
 
 # ---------- XSS safety ----------
@@ -103,6 +106,20 @@ def test_local_csv_parsing():
     assert len(items) == 6
     assert all(i.source == "Google Sheet (sample)" for i in items)
     assert items[0].text.startswith("TypeScript support")
+
+
+def test_csv_column_fallback_length_detection():
+    with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as tmp:
+        tmp.write("Timestamp,Respondent_Email,Customer_Opinion\n")
+        tmp.write("2026-07-31,user@test.com,The new UI layout is fantastic and extremely fast!\n")
+        tmp_path = Path(tmp.name)
+
+    try:
+        items = fetch_google_sheet(local_csv=tmp_path)
+        assert len(items) == 1
+        assert items[0].text == "The new UI layout is fantastic and extremely fast!"
+    finally:
+        tmp_path.unlink()
 
 
 # ---------- dashboard rendering ----------
@@ -147,5 +164,41 @@ def test_serve_interval_defaults_to_daily():
 
 def test_retry_policy_degrades_gracefully():
     from radar import build_retry_policy
-    # returns a RetryConfig when available, None on older SDKs — never raises
     build_retry_policy()
+
+
+# ---------- SQLite Caching Tests ----------
+
+def test_db_cache_hit_and_miss():
+    with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+        db_path = Path(tmp.name)
+        db.init_db(db_path)
+        
+        item = FeedbackItem("test-1", "GitHub", "author", "Test text content", "", "")
+        card = Card("test-1", "Test Title", "bug", "high", "easy", "days",
+                    "Summary", "neutral", "GitHub", "", "author")
+        
+        # Initial check: cache miss
+        assert db.get_cached_card("test-1", "Test text content", db_path) is None
+        
+        # Save card
+        db.save_cached_cards([card], {"test-1": item}, db_path)
+        
+        # Cache hit
+        cached = db.get_cached_card("test-1", "Test text content", db_path)
+        assert cached is not None
+        assert cached["title"] == "Test Title"
+        assert cached["category"] == "bug"
+        
+        # Content hash mismatch: cache miss
+        assert db.get_cached_card("test-1", "Modified text content", db_path) is None
+
+
+if __name__ == "__main__":
+    funcs = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
+    passed = 0
+    for f in funcs:
+        f()
+        passed += 1
+        print(f"[PASS] {f.__name__}")
+    print(f"\nAll {passed} tests passed successfully!")
