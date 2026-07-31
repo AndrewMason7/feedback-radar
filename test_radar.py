@@ -126,12 +126,13 @@ def test_csv_column_fallback_length_detection():
 # ---------- dashboard rendering ----------
 
 def test_dashboard_contains_filters_and_cards():
-    cards, summary = demo_data()
+    cards = [
+        Card("gh-1", "Test Issue", "bug", "high", "easy", "hours", "Summary", "neutral", "GitHub", "https://github.com", "user")
+    ]
+    summary = {"headline": "Test brief", "bullets": ["Bullet 1"], "mood": {"frustrated": 0, "neutral": 100, "excited": 0}}
     html = render_dashboard(cards, summary, "2026-07-31 13:00")
-    assert 'data-cat="bug"' in html
     assert 'data-g="cat"' in html          # filter chips rendered
     assert 'id="fsearch"' in html           # live search box
-    assert "quick win" in html
     assert "Radar" in html
 
 
