@@ -2,6 +2,8 @@
 credentials.json
 token.json
 .env
+radar.db
+*.db
 
 # python
 __pycache__/
