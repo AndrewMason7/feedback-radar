@@ -32,7 +32,7 @@ Given these triaged feedback cards as JSON, return STRICT JSON ONLY with keys:
 - "headline": 1 sentence — the single most important thing to know today
 - "bullets": array of exactly 3 short strings (trends, risks, quick wins)
 - "mood": object with integer percentages summing to 100:
-  {"frustrated": x, "neutral": y, "excited": z}
+  {{"frustrated": x, "neutral": y, "excited": z}}
 
 Cards:
 {cards}
@@ -47,8 +47,8 @@ For each item, determine if it is a duplicate of another item in the list.
 
 Return STRICT JSON ONLY (a JSON array of objects):
 [
-  {"id": "gh-1", "duplicate_of": null},
-  {"id": "gs-2", "duplicate_of": "gh-1"}
+  {{"id": "gh-1", "duplicate_of": null}},
+  {{"id": "gs-2", "duplicate_of": "gh-1"}}
 ]
 
 Cards:
