@@ -192,4 +192,10 @@ pytest test_radar.py -v
 
 ---
 
+## License 📄
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 Built with the [Google Antigravity SDK](https://github.com/google-antigravity/antigravity-sdk-python) 🤖
+
+
